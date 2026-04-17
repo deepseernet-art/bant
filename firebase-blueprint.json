@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "Order": {
+      "title": "Order",
+      "description": "반티 주문 정보",
+      "type": "object",
+      "properties": {
+        "studentName": {
+          "type": "string",
+          "description": "학생 이름"
+        },
+        "shirtSize": {
+          "type": "string",
+          "enum": ["S", "M", "L", "XL", "2XL", "3XL"],
+          "description": "상의 사이즈"
+        },
+        "nickname": {
+          "type": "string",
+          "description": "이니셜 또는 별명"
+        },
+        "uid": {
+          "type": "string",
+          "description": "작성자 UID"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "작성자 이메일"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "생성 일시 (ISO 8601)"
+        }
+      },
+      "required": ["studentName", "shirtSize", "nickname", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "전체 반티 주문 목록"
+    }
+  }
+}

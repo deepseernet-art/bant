@@ -1,0 +1,55 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: orders
+// Document ID: auto-generated
+// Fields:
+//   - studentName: string (required, 1-50 chars)
+//   - shirtSize: string (required, enum: S, M, L, XL, 2XL, 3XL)
+//   - nickname: string (required, 1-100 chars)
+//   - uid: string (optional)
+//   - createdAt: string (required, ISO 8601 format)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "deepseer.net@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isValidOrder(data) {
+      return data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 50 &&
+             data.shirtSize in ['S', 'M', 'L', 'XL', '2XL', '3XL'] &&
+             data.nickname is string && data.nickname.size() >= 1 && data.nickname.size() <= 8 &&
+             data.createdAt is string && data.createdAt.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /orders/{orderId} {
+      // Public read for bulletin board style
+      allow read: if true;
+      
+      // Public create with validation
+      allow create: if isValidOrder(request.resource.data);
+      
+      // Update and delete restricted to admin
+      allow update, delete: if isAdmin();
+    }
+  }
+}

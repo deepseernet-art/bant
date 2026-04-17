@@ -3,76 +3,212 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Download, Plus, Trash2, Shirt, User, Hash, CheckCircle2 } from 'lucide-react';
+import { 
+  Download, Plus, Trash2, Shirt, User, Hash, CheckCircle2, 
+  LogIn, LogOut, Loader2, AlertCircle 
+} from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { Order, ShirtSize, PantSize } from './types';
+import { 
+  collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, 
+  FirestoreError, getDocFromServer
+} from 'firebase/firestore';
+import { 
+  auth, db 
+} from './firebase';
+import { Order, ShirtSize } from './types';
 
 const SHIRT_SIZES: ShirtSize[] = ['S', 'M', 'L', 'XL', '2XL', '3XL'];
-const PANT_SIZES: PantSize[] = ['3부', '5부', '3XL'];
 
-export default function App() {
+// --- Error Handling ---
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    providerInfo: any[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+// --- Error Boundary ---
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, errorMessage: '' };
+  
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, errorMessage: error.message };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('Uncaught error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let displayMessage = "문제가 발생했습니다. 다시 시도해주세요.";
+      try {
+        const parsed = JSON.parse(this.state.errorMessage);
+        if (parsed.error && parsed.error.includes("permissions")) {
+          displayMessage = "권한이 없습니다. 관리자에게 문의하세요.";
+        }
+      } catch (e) {
+        // Not a JSON error
+      }
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+          <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center border border-red-100">
+            <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-gray-800 mb-2">오류 발생</h1>
+            <p className="text-gray-600 mb-6">{displayMessage}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700 transition"
+            >
+              새로고침
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// --- Main App Component ---
+
+function BantiApp() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Form State
   const [studentName, setStudentName] = useState('');
   const [shirtSize, setShirtSize] = useState<ShirtSize | ''>('');
-  const [hasPants, setHasPants] = useState(false);
-  const [pantsSize, setPantsSize] = useState<PantSize | ''>('');
   const [nickname, setNickname] = useState('');
 
-  // Load from localStorage on mount
+  // 1. Validate Connection & Load Data (onSnapshot)
   useEffect(() => {
-    const saved = localStorage.getItem('banti_orders');
-    if (saved) {
+    // Test connection first
+    async function testConnection() {
       try {
-        setOrders(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to load orders', e);
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('offline')) {
+          console.error("Firebase connection check failed. Check configuration.");
+        }
       }
     }
+    testConnection();
+
+    const path = 'orders';
+    const q = query(collection(db, path), orderBy('createdAt', 'desc'));
+    
+    setLoading(true);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const docs = snapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      })) as Order[];
+      setOrders(docs);
+      setLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  // Save to localStorage whenever orders change
-  useEffect(() => {
-    localStorage.setItem('banti_orders', JSON.stringify(orders));
-  }, [orders]);
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!studentName || !shirtSize || !nickname) {
       alert('필수 정보를 모두 입력해주세요.');
       return;
     }
 
-    const newOrder: Order = {
-      id: crypto.randomUUID(),
+    if (nickname.length > 8) {
+      alert('이니셜/별명/이름은 최대 8글자까지 입력 가능합니다.');
+      return;
+    }
+
+    const path = 'orders';
+    const newOrder = {
       studentName,
       shirtSize,
-      hasPants,
-      pantsSize: hasPants ? (pantsSize || 'None') : 'None',
       nickname,
-      createdAt: new Date().toLocaleDateString('ko-KR', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
+      createdAt: new Date().toISOString()
     };
 
-    setOrders([newOrder, ...orders]);
-    
-    // Reset form
-    setStudentName('');
-    setShirtSize('');
-    setHasPants(false);
-    setPantsSize('');
-    setNickname('');
+    try {
+      await addDoc(collection(db, path), newOrder);
+      
+      // Reset form
+      setStudentName('');
+      setShirtSize('');
+      setNickname('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
   };
 
-  const deleteOrder = (id: string) => {
-    if (confirm('이 주문을 삭제하시겠습니까?')) {
-      setOrders(orders.filter(o => o.id !== id));
+  const deleteOrder = async (id: string) => {
+    if (confirm('이 주문을 삭제하시겠습니까? (관리자 전용 기능)')) {
+      const path = `orders/${id}`;
+      try {
+        await deleteDoc(doc(db, 'orders', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, path);
+      }
     }
   };
 
@@ -83,289 +219,224 @@ export default function App() {
     }
 
     const data = orders.map((o, index) => ({
-      'No.': orders.length - index,
+      '번호': orders.length - index,
       '이름': o.studentName,
       '상의 사이즈': o.shirtSize,
-      '하의 맞춤 여부': o.hasPants ? 'O' : 'X',
-      '하의 사이즈': o.hasPants ? o.pantsSize : '-',
       '이니셜/별명': o.nickname,
-      '주문 일시': o.createdAt
+      '주문 일시': new Date(o.createdAt).toLocaleString('ko-KR')
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, '반티주문목록');
     
-    // Column width adjustment
-    const wscols = [
-      { wch: 5 },
-      { wch: 10 },
-      { wch: 10 },
-      { wch: 12 },
-      { wch: 10 },
-      { wch: 20 },
-      { wch: 25 }
-    ];
-    worksheet['!cols'] = wscols;
-
     XLSX.writeFile(workbook, `반티_주문_목록_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
+  // Loading initial state (placeholder for connection test or just delay if needed)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      // Small delay to ensure DB triggers if any
+    }, 500);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-[#f1f5f9] text-[#1e293b] font-sans">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-100">
       {/* Header */}
-      <header className="bg-[#2d3748] text-white py-12 px-4 text-center shadow-lg">
-        <motion.h1 
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-4xl font-bold mb-2 tracking-tight"
-        >
-          석천중 1학년 1반 반티 주문
-        </motion.h1>
-        <motion.p 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 0.8 }}
-          transition={{ delay: 0.2 }}
-          className="text-gray-300 font-medium"
-        >
-          아래 정보를 입력해주세요
-        </motion.p>
+      <header className="bg-[#1e293b] text-white py-16 px-4 relative overflow-hidden">
+        <div className="max-w-4xl mx-auto flex flex-col items-center relative z-10">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="mb-4 p-3 bg-blue-500/20 rounded-2xl backdrop-blur-sm"
+          >
+            <Shirt className="w-8 h-8 text-blue-400" />
+          </motion.div>
+          <motion.h1 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-4xl md:text-5xl font-extrabold mb-4 tracking-tight text-center"
+          >
+            석천중 <span className="text-blue-400">1학년 1반</span> 반티 주문
+          </motion.h1>
+          <motion.a 
+            href="https://bant-nara.com/amall/?mode=detailview&numid=962"
+            target="_blank"
+            rel="noopener noreferrer"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.8 }}
+            className="text-blue-300 hover:text-blue-200 font-semibold text-lg underline underline-offset-4 transition-colors"
+          >
+            농구나시 레드 with 시카고 23 인쇄
+          </motion.a>
+        </div>
+        
+        {/* Decorative Elements */}
+        <div className="absolute top-0 left-0 w-96 h-96 bg-blue-600/10 rounded-full blur-[100px] -ml-48 -mt-48" />
+        <div className="absolute bottom-0 right-0 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] -mr-48 -mb-48" />
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 -mt-8 pb-20">
-        {/* Form Section */}
+      <main className="max-w-4xl mx-auto px-4 pb-24">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-2xl shadow-xl p-8 mb-10 border border-gray-100"
+          className="bg-white rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.05)] p-8 md:p-12 mb-16 border border-slate-100 -mt-12 relative z-20"
         >
-          <div className="flex items-center gap-2 mb-8">
-            <div className="w-1 h-6 bg-blue-600 rounded-full" />
-            <h2 className="text-xl font-bold text-gray-800">주문 정보 입력</h2>
-          </div>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-10">
+                <div className="flex items-center gap-4">
+                  <div className="w-2 h-10 bg-blue-600 rounded-full" />
+                  <h2 className="text-2xl font-bold text-slate-800">주문 정보 입력</h2>
+                </div>
+                <div className="bg-amber-50 text-amber-700 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border border-amber-100 shadow-sm">
+                  <CheckCircle2 className="w-4 h-4" />
+                  등번호는 우리반 번호로 추가합니다.
+                </div>
+              </div>
 
-          <form onSubmit={handleSubmit} className="space-y-8">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              {/* Name Input */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-600 flex items-center gap-1">
-                  이름 <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <form onSubmit={handleSubmit} className="space-y-10">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                  <div className="space-y-3">
+                    <label className="text-[15px] font-bold text-slate-700 flex items-center gap-2">
+                      <User className="w-4 h-4 text-blue-500" /> 이름 <span className="text-blue-500 font-bold">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={studentName}
+                      onChange={(e) => setStudentName(e.target.value)}
+                      placeholder="예: 홍길동"
+                      className="w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none font-bold placeholder:text-slate-300"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="text-[15px] font-bold text-slate-700 flex items-center gap-2">
+                      <Shirt className="w-4 h-4 text-blue-500" /> 상의 사이즈 <span className="text-blue-500 font-bold">*</span>
+                    </label>
+                    <select
+                      required
+                      value={shirtSize}
+                      onChange={(e) => setShirtSize(e.target.value as ShirtSize)}
+                      className="w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none appearance-none font-bold"
+                    >
+                      <option value="">선택하세요</option>
+                      {SHIRT_SIZES.map(size => <option key={size} value={size}>{size}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-[15px] font-bold text-slate-700 flex items-center gap-2">
+                    <Hash className="w-4 h-4 text-blue-500" /> 이니셜/별명/이름(한글 1~8글자, 영문 가능) <span className="text-blue-500 font-bold">*</span>
+                  </label>
                   <input
                     type="text"
                     required
-                    value={studentName}
-                    onChange={(e) => setStudentName(e.target.value)}
-                    placeholder="홍길동"
-                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                    maxLength={8}
+                    value={nickname}
+                    onChange={(e) => setNickname(e.target.value)}
+                    placeholder="예: HGD 또는 길동이"
+                    className="w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none font-bold placeholder:text-slate-300"
                   />
                 </div>
-              </div>
 
-              {/* Shirt Size Select */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-600 flex items-center gap-1">
-                  상의 사이즈 <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <Shirt className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <select
-                    required
-                    value={shirtSize}
-                    onChange={(e) => setShirtSize(e.target.value as ShirtSize)}
-                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none appearance-none"
-                  >
-                    <option value="">선택해주세요</option>
-                    {SHIRT_SIZES.map(size => (
-                      <option key={size} value={size}>{size}</option>
-                    ))}
-                  </select>
+                <button
+                  type="submit"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-3 text-lg"
+                >
+                  <Plus className="w-6 h-6" />
+                  주문 등록 완료
+                </button>
+              </form>
+            </motion.div>
+
+            {/* List Section */}
+            <div className="space-y-10">
+              <div className="flex justify-between items-center px-4">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-2xl font-extrabold text-slate-800 tracking-tight">주문 현황</h2>
+                  <span className="bg-slate-100 text-slate-600 px-4 py-1.5 rounded-full text-sm font-bold border border-slate-200">
+                    {orders.length}명
+                  </span>
                 </div>
-              </div>
-            </div>
-
-            {/* Pants Toggle */}
-            <div className="space-y-3">
-              <label className="text-sm font-semibold text-gray-600">하의 맞춤 여부</label>
-              <div className="flex gap-2">
                 <button
-                  type="button"
-                  onClick={() => setHasPants(true)}
-                  className={`flex-1 py-3 px-4 rounded-xl font-bold transition-all ${
-                    hasPants 
-                    ? 'bg-blue-600 text-white shadow-md' 
-                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                  }`}
+                  onClick={exportToExcel}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white px-6 py-3 rounded-2xl font-bold shadow-lg shadow-emerald-500/20 flex items-center gap-2 transition-all active:scale-[0.98] text-sm"
                 >
-                  맞춤 O
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setHasPants(false);
-                    setPantsSize('');
-                  }}
-                  className={`flex-1 py-3 px-4 rounded-xl font-bold transition-all ${
-                    !hasPants 
-                    ? 'bg-[#1e293b] text-white shadow-md' 
-                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                  }`}
-                >
-                  맞춤 X
+                  <Download className="w-4 h-4" />
+                  엑셀로 저장
                 </button>
               </div>
-            </div>
 
-            {/* Pants Size (Conditional) */}
-            <AnimatePresence>
-              {hasPants && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="space-y-2 overflow-hidden"
-                >
-                  <label className="text-sm font-semibold text-gray-600">하의 사이즈</label>
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                    {PANT_SIZES.map(size => (
-                      <button
-                        key={size}
-                        type="button"
-                        onClick={() => setPantsSize(size)}
-                        className={`py-2 text-sm font-bold rounded-lg border transition-all ${
-                          pantsSize === size
-                          ? 'bg-blue-50 border-blue-500 text-blue-600 shadow-sm'
-                          : 'bg-white border-gray-200 text-gray-500 hover:border-blue-300'
-                        }`}
-                      >
-                        {size}
-                      </button>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Nickname Input */}
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600 flex items-center gap-1">
-                이나셜 또는 별명(이름 가능) <span className="text-red-500">*</span>
-              </label>
-              <div className="relative">
-                <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  required
-                  value={nickname}
-                  onChange={(e) => setNickname(e.target.value)}
-                  placeholder="예: HGD 또는 길동이"
-                  className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Submit Button */}
-            <div className="flex justify-end pt-4">
-              <button
-                type="submit"
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-10 rounded-xl shadow-lg hover:shadow-xl transition-all active:scale-95 flex items-center gap-2"
-              >
-                <Plus className="w-5 h-5" />
-                등록하기
-              </button>
-            </div>
-          </form>
-        </motion.div>
-
-        {/* List Section */}
-        <div className="space-y-6">
-          <div className="flex justify-between items-end mb-4">
-            <div className="flex items-center gap-3">
-              <h2 className="text-2xl font-bold text-gray-800">주문 목록</h2>
-              <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">
-                {orders.length}명
-              </span>
-            </div>
-            <button
-              onClick={exportToExcel}
-              className="bg-[#10b981] hover:bg-[#059669] text-white px-5 py-2.5 rounded-xl font-bold shadow-md flex items-center gap-2 transition-all active:scale-95 text-sm"
-            >
-              <Download className="w-4 h-4" />
-              엑셀 내보내기
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <AnimatePresence mode="popLayout">
-              {orders.length === 0 ? (
-                <motion.div 
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="col-span-full py-20 text-center text-gray-400 bg-white/50 rounded-2xl border-2 border-dashed border-gray-200"
-                >
-                  <p>등록된 주문이 없습니다.</p>
-                </motion.div>
+              {loading ? (
+                <div className="py-24 flex justify-center">
+                  <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
+                </div>
               ) : (
-                orders.map((order) => (
-                  <motion.div
-                    key={order.id}
-                    layout
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.9 }}
-                    className="bg-white rounded-2xl p-6 shadow-md hover:shadow-lg transition-shadow border border-gray-100 relative group"
-                  >
-                    <button
-                      onClick={() => deleteOrder(order.id)}
-                      className="absolute top-4 right-4 p-2 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                  <AnimatePresence mode="popLayout">
+                    {orders.length === 0 ? (
+                      <motion.div className="col-span-full py-24 text-center text-slate-400 font-medium bg-slate-50 border-2 border-dashed border-slate-200 rounded-[2rem]">
+                        현재 등록된 주문 내역이 하나도 없어요.
+                      </motion.div>
+                    ) : (
+                      orders.map((order) => (
+                        <motion.div
+                          key={order.id}
+                          layout
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.9 }}
+                          className="bg-white rounded-[2rem] p-8 shadow-[0_10px_30px_rgba(0,0,0,0.03)] border border-slate-100 relative group transition-all duration-300 hover:shadow-xl hover:-translate-y-1"
+                        >
+                          <div className="flex items-center gap-4 mb-8">
+                            <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 font-bold text-2xl shadow-inner border border-blue-100">
+                              {order.studentName[0]}
+                            </div>
+                            <div>
+                               <h3 className="text-xl font-bold text-slate-800 leading-none mb-2">{order.studentName}</h3>
+                               <p className="text-xs font-medium text-slate-400">{new Date(order.createdAt).toLocaleDateString()} 등록</p>
+                            </div>
+                          </div>
 
-                    <div className="flex items-start gap-4 mb-4">
-                      <div className="w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center text-blue-600">
-                        <User className="w-6 h-6" />
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-bold text-gray-800">{order.studentName}</h3>
-                        <p className="text-xs text-gray-400">{order.createdAt}</p>
-                      </div>
-                    </div>
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between py-3 border-b border-slate-50">
+                              <span className="text-sm font-medium text-slate-400">사이즈</span>
+                              <span className="px-4 py-1.5 bg-slate-900 text-white rounded-full text-xs font-bold tracking-wider">
+                                {order.shirtSize}
+                              </span>
+                            </div>
 
-                    <div className="flex flex-wrap gap-2 mb-4">
-                      <div className="flex items-center gap-1.5 bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md text-xs font-bold">
-                        <span>상의</span>
-                        <span className="bg-blue-600 text-white px-1.5 rounded uppercase">{order.shirtSize}</span>
-                      </div>
-                      {order.hasPants && (
-                        <div className="flex items-center gap-1.5 bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-md text-xs font-bold">
-                          <span>하의</span>
-                          <span className="bg-indigo-600 text-white px-1.5 rounded uppercase">{order.pantsSize}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                      <p className="text-xs text-gray-400 mb-1">이니셜/별명</p>
-                      <p className="font-semibold text-gray-700 truncate">{order.nickname}</p>
-                    </div>
-
-                    <div className="mt-4 flex justify-end">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 opacity-20" />
-                    </div>
-                  </motion.div>
-                ))
+                            <div className="pt-2">
+                               <div className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                 <Hash className="w-3 h-3" /> 이니셜 / 별명
+                               </div>
+                               <p className="font-bold text-slate-600 text-lg bg-slate-50 px-4 py-3 rounded-2xl border border-slate-100/50">
+                                 {order.nickname}
+                               </p>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </AnimatePresence>
+                </div>
               )}
-            </AnimatePresence>
-          </div>
-        </div>
+            </div>
       </main>
 
-      <footer className="py-10 text-center text-gray-400 text-sm">
-        <p>© {new Date().getFullYear()} 우리반 반티 주문관리 시스템</p>
+      <footer className="py-16 text-center text-slate-400 text-xs font-semibold uppercase tracking-widest">
+        <p>© {new Date().getFullYear()} 석천중학교 반티 주문 시스템</p>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <BantiApp />
+    </ErrorBoundary>
   );
 }
