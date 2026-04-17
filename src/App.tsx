@@ -101,8 +101,10 @@ function BantiApp() {
       return;
     }
 
-    if (nickname.length > 8) {
-      alert('이니셜/별명/이름은 최대 8글자까지 입력 가능합니다.');
+    // Count Hangul characters
+    const hangulCount = (nickname.match(/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/g) || []).length;
+    if (hangulCount > 8) {
+      alert('한글은 최대 8글자까지 입력 가능합니다.');
       return;
     }
 
@@ -298,12 +300,11 @@ function BantiApp() {
 
                 <div className="space-y-3">
                   <label className="text-[15px] font-bold text-slate-700 flex items-center gap-2">
-                    <Hash className="w-4 h-4 text-blue-500" /> 이니셜/별명/이름(한글 1~8글자, 영문 가능) <span className="text-blue-500 font-bold">*</span>
+                    <Hash className="w-4 h-4 text-blue-500" /> 이니셜/별명/이름(한글 8자 이내, 영문 가능) <span className="text-blue-500 font-bold">*</span>
                   </label>
                   <input
                     type="text"
                     required
-                    maxLength={8}
                     value={nickname}
                     onChange={(e) => setNickname(e.target.value)}
                     placeholder="예: HGD 또는 길동이"
