@@ -10,7 +10,7 @@ import * as XLSX from 'xlsx';
 import { Order, ShirtSize, PantSize } from './types';
 
 const SHIRT_SIZES: ShirtSize[] = ['S', 'M', 'L', 'XL', '2XL', '3XL'];
-const PANT_SIZES: PantSize[] = ['S', 'M', 'L', 'XL', '2XL', '3XL'];
+const PANT_SIZES: PantSize[] = ['3부', '5부', '3XL'];
 
 export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);

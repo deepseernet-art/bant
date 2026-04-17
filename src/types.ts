@@ -4,7 +4,7 @@
  */
 
 export type ShirtSize = 'S' | 'M' | 'L' | 'XL' | '2XL' | '3XL';
-export type PantSize = 'S' | 'M' | 'L' | 'XL' | '2XL' | '3XL' | 'None';
+export type PantSize = '3부' | '5부' | '3XL' | 'None';
 
 export interface Order {
   id: string;
