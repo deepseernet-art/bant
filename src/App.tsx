@@ -3,69 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, ReactNode, ErrorInfo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Download, Plus, Trash2, Shirt, User, Hash, CheckCircle2, 
-  LogIn, LogOut, Loader2, AlertCircle 
+  Loader2, AlertCircle, Settings, X, Lock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { 
-  collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, 
-  FirestoreError, getDocFromServer
-} from 'firebase/firestore';
-import { 
-  auth, db 
-} from './firebase';
 import { Order, ShirtSize } from './types';
 
 const SHIRT_SIZES: ShirtSize[] = ['S', 'M', 'L', 'XL', '2XL', '3XL'];
-
-// --- Error Handling ---
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    providerInfo: any[];
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
 
 // --- Error Boundary ---
 
@@ -81,10 +28,6 @@ interface ErrorBoundaryState {
 class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { hasError: false, errorMessage: '' };
   
-  constructor(props: ErrorBoundaryProps) {
-    super(props);
-  }
-
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { hasError: true, errorMessage: error.message };
   }
@@ -95,22 +38,12 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 
   render() {
     if (this.state.hasError) {
-      let displayMessage = "문제가 발생했습니다. 다시 시도해주세요.";
-      try {
-        const parsed = JSON.parse(this.state.errorMessage);
-        if (parsed.error && parsed.error.includes("permissions")) {
-          displayMessage = "권한이 없습니다. 관리자에게 문의하세요.";
-        }
-      } catch (e) {
-        // Not a JSON error
-      }
-
       return (
         <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
           <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center border border-red-100">
             <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
             <h1 className="text-2xl font-bold text-gray-800 mb-2">오류 발생</h1>
-            <p className="text-gray-600 mb-6">{displayMessage}</p>
+            <p className="text-gray-600 mb-6 font-medium">문제가 발생했습니다. 다시 시도해주세요.</p>
             <button
               onClick={() => window.location.reload()}
               className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700 transition"
@@ -121,7 +54,6 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
         </div>
       );
     }
-
     return this.props.children;
   }
 }
@@ -131,42 +63,35 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 function BantiApp() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [password, setPassword] = useState('');
 
   // Form State
   const [studentName, setStudentName] = useState('');
   const [shirtSize, setShirtSize] = useState<ShirtSize | ''>('');
   const [nickname, setNickname] = useState('');
 
-  // 1. Validate Connection & Load Data (onSnapshot)
-  useEffect(() => {
-    // Test connection first
-    async function testConnection() {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('offline')) {
-          console.error("Firebase connection check failed. Check configuration.");
-        }
+  // Load Data
+  const fetchOrders = async () => {
+    try {
+      const res = await fetch('/api/orders');
+      if (res.ok) {
+        const data = await res.json();
+        setOrders(data);
       }
-    }
-    testConnection();
-
-    const path = 'orders';
-    const q = query(collection(db, path), orderBy('createdAt', 'desc'));
-    
-    setLoading(true);
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(d => ({
-        id: d.id,
-        ...d.data()
-      })) as Order[];
-      setOrders(docs);
+    } catch (error) {
+      console.error('Failed to fetch orders:', error);
+    } finally {
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
+    }
+  };
 
-    return () => unsubscribe();
+  useEffect(() => {
+    fetchOrders();
+    // Refresh every 30 seconds for non-realtime cumulative board feel
+    const interval = setInterval(fetchOrders, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -181,35 +106,68 @@ function BantiApp() {
       return;
     }
 
-    const path = 'orders';
     const newOrder = {
       studentName,
       shirtSize,
-      nickname,
-      createdAt: new Date().toISOString()
+      nickname
     };
 
     try {
-      await addDoc(collection(db, path), newOrder);
-      
-      // Reset form
-      setStudentName('');
-      setShirtSize('');
-      setNickname('');
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newOrder)
+      });
+
+      if (res.ok) {
+        // Reset form
+        setStudentName('');
+        setShirtSize('');
+        setNickname('');
+        fetchOrders(); // Refresh list
+      }
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, path);
+      console.error('Failed to submit order:', error);
+      alert('등록 중 오류가 발생했습니다.');
     }
   };
 
   const deleteOrder = async (id: string) => {
-    if (confirm('이 주문을 삭제하시겠습니까? (관리자 전용 기능)')) {
-      const path = `orders/${id}`;
+    if (!isAdmin) {
+      alert('관리자 권한이 필요합니다.');
+      return;
+    }
+
+    if (confirm('이 주문을 삭제하시겠습니까?')) {
       try {
-        await deleteDoc(doc(db, 'orders', id));
+        const res = await fetch(`/api/orders/${id}`, {
+          method: 'DELETE'
+        });
+        if (res.ok) {
+          fetchOrders();
+        }
       } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, path);
+        console.error('Failed to delete order:', error);
+        alert('삭제 중 오류가 발생했습니다.');
       }
     }
+  };
+
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password === '1379') {
+      setIsAdmin(true);
+      setIsLoginModalOpen(false);
+      setPassword('');
+      alert('관리자로 로그인되었습니다.');
+    } else {
+      alert('비밀번호가 올바르지 않습니다.');
+    }
+  };
+
+  const handleAdminLogout = () => {
+    setIsAdmin(false);
+    alert('로그아웃되었습니다.');
   };
 
   const exportToExcel = () => {
@@ -233,18 +191,30 @@ function BantiApp() {
     XLSX.writeFile(workbook, `반티_주문_목록_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
-  // Loading initial state (placeholder for connection test or just delay if needed)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      // Small delay to ensure DB triggers if any
-    }, 500);
-    return () => clearTimeout(timer);
-  }, []);
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-100">
       {/* Header */}
       <header className="bg-[#1e293b] text-white py-16 px-4 relative overflow-hidden">
+        {/* Admin Gear Icon */}
+        <div className="absolute top-6 right-6 z-30">
+          {!isAdmin ? (
+            <button 
+              onClick={() => setIsLoginModalOpen(true)}
+              className="p-3 bg-white/10 hover:bg-white/20 rounded-full transition-colors backdrop-blur-sm group"
+            >
+              <Settings className="w-6 h-6 text-white/50 group-hover:text-white group-hover:rotate-90 transition-all duration-300" />
+            </button>
+          ) : (
+            <button 
+              onClick={handleAdminLogout}
+              className="flex items-center gap-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-xl font-bold text-sm transition-colors border border-red-500/30 backdrop-blur-sm"
+            >
+              <Lock className="w-4 h-4" />
+              관리자 모드 종료
+            </button>
+          )}
+        </div>
+
         <div className="max-w-4xl mx-auto flex flex-col items-center relative z-10">
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
@@ -288,7 +258,7 @@ function BantiApp() {
                   <div className="w-2 h-10 bg-blue-600 rounded-full" />
                   <h2 className="text-2xl font-bold text-slate-800">주문 정보 입력</h2>
                 </div>
-                <div className="bg-amber-50 text-amber-700 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border border-amber-100 shadow-sm">
+                <div className="bg-amber-50 text-amber-700 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border border-amber-100 shadow-sm transition-all duration-300">
                   <CheckCircle2 className="w-4 h-4" />
                   등번호는 우리반 번호로 추가합니다.
                 </div>
@@ -390,6 +360,15 @@ function BantiApp() {
                           exit={{ opacity: 0, scale: 0.9 }}
                           className="bg-white rounded-[2rem] p-8 shadow-[0_10px_30px_rgba(0,0,0,0.03)] border border-slate-100 relative group transition-all duration-300 hover:shadow-xl hover:-translate-y-1"
                         >
+                          {isAdmin && (
+                            <button
+                              onClick={() => deleteOrder(order.id)}
+                              className="absolute top-6 right-6 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          )}
+
                           <div className="flex items-center gap-4 mb-8">
                             <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 font-bold text-2xl shadow-inner border border-blue-100">
                               {order.studentName[0]}
@@ -426,8 +405,62 @@ function BantiApp() {
             </div>
       </main>
 
+      {/* Admin Login Modal */}
+      <AnimatePresence>
+        {isLoginModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsLoginModalOpen(false)}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative bg-white rounded-[2.5rem] p-10 max-w-sm w-full shadow-2xl overflow-hidden"
+            >
+              <button 
+                onClick={() => setIsLoginModalOpen(false)}
+                className="absolute top-6 right-6 p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400"
+              >
+                <X className="w-6 h-6" />
+              </button>
+
+              <div className="mb-8 text-center">
+                <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <Lock className="w-8 h-8" />
+                </div>
+                <h3 className="text-2xl font-bold text-slate-800">관리자 인증</h3>
+                <p className="text-slate-400 text-sm mt-2">비밀번호를 입력하여 접속하세요.</p>
+              </div>
+
+              <form onSubmit={handleAdminLogin} className="space-y-6">
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="비밀번호 입력"
+                  className="w-full px-6 py-5 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all outline-none font-bold text-center text-2xl tracking-[0.5em]"
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-5 rounded-2xl transition-all shadow-xl shadow-slate-900/20 active:scale-[0.98]"
+                >
+                  로그인
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <footer className="py-16 text-center text-slate-400 text-xs font-semibold uppercase tracking-widest">
-        <p>© {new Date().getFullYear()} 석천중학교 반티 주문 시스템</p>
+        <p>© {new Date().getFullYear()} 석천중학교 반티 주문 시스템 (서버형)</p>
       </footer>
     </div>
   );
