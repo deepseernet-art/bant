@@ -34,18 +34,21 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Logging middleware
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+  });
+
   // --- API Routes ---
   
   // Get all orders
   app.get('/api/orders', async (req, res) => {
     try {
       const orders = await getOrders();
-      // Sort by createdAt descending
-      const sorted = orders.sort((a: any, b: any) => 
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-      res.json(sorted);
+      res.json(orders);
     } catch (error) {
+      console.error('API Error /api/orders:', error);
       res.status(500).json({ error: 'Failed to fetch orders' });
     }
   });
@@ -53,21 +56,32 @@ async function startServer() {
   // Create an order
   app.post('/api/orders', async (req, res) => {
     try {
+      const { studentName, shirtSize, nickname } = req.body;
+      if (!studentName || !shirtSize || !nickname) {
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+
       const newOrder = {
         id: Date.now().toString(),
-        ...req.body,
+        studentName,
+        shirtSize,
+        nickname,
         createdAt: new Date().toISOString()
       };
+      
       const orders = await getOrders();
       orders.push(newOrder);
       await saveOrders(orders);
+      
+      console.log('Order created:', newOrder.id);
       res.status(201).json(newOrder);
     } catch (error) {
+      console.error('API Error POST /api/orders:', error);
       res.status(500).json({ error: 'Failed to create order' });
     }
   });
 
-  // Delete an order (Admin check on client, but we'll allow it here)
+  // Delete an order
   app.delete('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
     try {
@@ -80,14 +94,17 @@ async function startServer() {
       }
       
       await saveOrders(orders);
+      console.log('Order deleted:', id);
       res.json({ success: true });
     } catch (error) {
+      console.error('API Error DELETE /api/orders:', error);
       res.status(500).json({ error: 'Failed to delete order' });
     }
   });
 
   // Vite middleware setup
   if (process.env.NODE_ENV !== 'production') {
+    console.log('Initializing Vite middleware...');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
